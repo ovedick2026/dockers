@@ -1,0 +1,3 @@
+FROM ghcr.io/xerxes-2/clewdr:latest
+
+RUN chmod -R 777 ./data

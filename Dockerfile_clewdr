@@ -1,3 +1,0 @@
-FROM ghcr.io/jianglinzhang/zhongyi:latest
-
-RUN chmod -R 777 ./data

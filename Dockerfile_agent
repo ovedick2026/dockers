@@ -1,0 +1,3 @@
+FROM ghcr.io/stack-cairn/liveagent-gateway:latest
+
+user 10014

@@ -1,11 +1,11 @@
 schemaVersion: 1.2
 
 endpoints:
-  - name: agent-gateway-endpoint
-    displayName: Agent Gateway WS
+  - name: agent
+    displayName: Agent
     service:
       basePath: /
       port: 8080
-    type: WS
+    type: REST
     networkVisibilities:
       - Public

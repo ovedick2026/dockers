@@ -1,6 +1,10 @@
-schemaVersion: 1.0
+schemaVersion: 1.2
+
 endpoints:
-  - name: gateway-ws
-    port: 8080
-    type: HTTP
-    networkVisibility: Public
+  - name: agent-gateway-ws
+    displayName: Agent Gateway WS
+    service:
+      port: 8080                  
+    type: WS
+    networkVisibilities:
+      - Public

@@ -1,11 +1,10 @@
 schemaVersion: 1.2
 
 endpoints:
-  - name: agent
-    displayName: Agent
+  - name: websocket
+    displayName: Websocket
     service:
-      basePath: /
-      port: 8080
-    type: REST
+      port: 7860
+    type: WS
     networkVisibilities:
       - Public

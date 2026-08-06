@@ -1,0 +1,1 @@
+FROM ghcr.io/ibuhub/aistudio-to-api:latest

@@ -1,0 +1,3 @@
+FROM lampon/omnibox:latest
+
+user 10014

@@ -1,97 +1,99 @@
 FROM node:20-bookworm-slim
 
-# 1. 安装基础依赖和轻量版 Nginx
+# 1. 安装基础依赖和 Python3（无需安装 Nginx）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git ca-certificates curl tar nginx-light \
+    git ca-certificates curl tar python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. 修复 xdg-open 报错（防止 Web 模式弹出本地浏览器报错）
 RUN printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/xdg-open \
     && chmod +x /usr/local/bin/xdg-open
 
-# 3. 下载 opencode 和 filebrowser 到系统全局目录 /usr/local/bin/
+# 3. 下载 opencode 并解压到 /usr/local/bin/
 RUN ARCH=$(uname -m) && \
     case "$ARCH" in \
-      x86_64) OPENCODE_ARCH=x64; FB_ARCH=amd64 ;; \
-      aarch64) OPENCODE_ARCH=arm64; FB_ARCH=arm64 ;; \
+      x86_64) ARCH=x64 ;; \
+      aarch64) ARCH=arm64 ;; \
       *) echo "Unsupported arch: $ARCH"; exit 1 ;; \
     esac && \
-    curl -fsSL "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${OPENCODE_ARCH}.tar.gz" | tar -xz -C /usr/local/bin/ && \
-    chmod +x /usr/local/bin/opencode && \
-    curl -fsSL "https://github.com/filebrowser/filebrowser/releases/latest/download/linux-${FB_ARCH}-filebrowser.tar.gz" | tar -xz -C /usr/local/bin/ filebrowser && \
-    chmod +x /usr/local/bin/filebrowser
+    curl -fsSL "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${ARCH}.tar.gz" | tar -xz -C /usr/local/bin/ && \
+    chmod +x /usr/local/bin/opencode
 
-# 4. 创建 Choreo 规范的 10099 用户/用户组，并预先创建所需目录与默认自动授权配置
+# 4. 创建 Choreo 规范的 10099 用户/用户组，预创建目录并配置默认自动授权
 RUN groupadd --gid 10099 choreo && \
     useradd --uid 10099 --gid 10099 -m -d /home/choreo choreo && \
     mkdir -p /home/choreo/workspace /home/choreo/.config/opencode /home/choreo/.local /home/choreo/.opencode && \
     echo '{"permission":{"*":"allow"}}' > /home/choreo/.config/opencode/opencode.json && \
     chown -R 10099:10099 /home/choreo
 
-# 5. 生成专门适配非 Root(10099) 且关闭缓冲的 Nginx 配置
-RUN printf 'pid /tmp/nginx.pid;\n\
-events { worker_connections 1024; }\n\
-http {\n\
-    include /etc/nginx/mime.types;\n\
-    default_type application/octet-stream;\n\
-    client_body_temp_path /tmp/nginx_client_body;\n\
-    proxy_temp_path /tmp/nginx_proxy;\n\
-    fastcgi_temp_path /tmp/nginx_fastcgi;\n\
-    uwsgi_temp_path /tmp/nginx_uwsgi;\n\
-    scgi_temp_path /tmp/nginx_scgi;\n\
-    access_log /tmp/nginx_access.log;\n\
-    error_log /tmp/nginx_error.log;\n\
+# 5. 写入 20 行纯 Python 透明 TCP Socket 分流脚本（零缓冲，AI 回复秒出）
+RUN printf 'import socket, select, threading, os\n\
+LISTEN_PORT = 7860\n\
+OPENCODE_PORT = 7861\n\
+FILE_PORT = 8080\n\
 \n\
-    server {\n\
-        listen 7860;\n\
+def pipe_socket(client_sock, target_port):\n\
+    try:\n\
+        target_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n\
+        target_sock.connect(("127.0.0.1", target_port))\n\
+        sockets = [client_sock, target_sock]\n\
+        while True:\n\
+            readable, _, _ = select.select(sockets, [], [], 120)\n\
+            if not readable: break\n\
+            for s in readable:\n\
+                other = target_sock if s is client_sock else client_sock\n\
+                data = s.recv(8192)\n\
+                if not data: return\n\
+                other.sendall(data)\n\
+    except Exception:\n\
+        pass\n\
+    finally:\n\
+        try: client_sock.close()\n\
+        except: pass\n\
+        try: target_sock.close()\n\
+        except: pass\n\
 \n\
-        # 路由 1: 网页文件管理器 (/files/)\n\
-        location /files/ {\n\
-            proxy_pass http://127.0.0.1:8080;\n\
-            proxy_set_header Host $host;\n\
-            proxy_set_header X-Real-IP $remote_addr;\n\
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
-            proxy_set_header X-Forwarded-Proto $scheme;\n\
-            client_max_body_size 500M;\n\
-        }\n\
+def main():\n\
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n\
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n\
+    server.bind(("0.0.0.0", LISTEN_PORT))\n\
+    server.listen(128)\n\
+    while True:\n\
+        client_sock, _ = server.accept()\n\
+        try:\n\
+            peek_data = client_sock.recv(4096, socket.MSG_PEEK)\n\
+            if not peek_data:\n\
+                client_sock.close()\n\
+                continue\n\
+            line = peek_data.decode("utf-8", errors="ignore").split("\\r\\n")[0]\n\
+            target_port = FILE_PORT if "/files" in line else OPENCODE_PORT\n\
+            t = threading.Thread(target=pipe_socket, args=(client_sock, target_port))\n\
+            t.daemon = True\n\
+            t.start()\n\
+        except Exception:\n\
+            client_sock.close()\n\
 \n\
-        # 路由 2: OpenCode 网页端 (/)\n\
-        location / {\n\
-            proxy_pass http://127.0.0.1:7861;\n\
-            proxy_http_version 1.1;\n\
-            proxy_set_header Upgrade $http_upgrade;\n\
-            proxy_set_header Connection "upgrade";\n\
-            proxy_set_header Host $host;\n\
-            proxy_set_header X-Real-IP $remote_addr;\n\
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
-            proxy_set_header X-Forwarded-Proto $scheme;\n\
-            # 核心技术点：关闭 proxy_buffering 才能让 AI 流式打字正常输出\n\
-            proxy_buffering off;\n\
-            proxy_cache off;\n\
-            chunked_transfer_encoding on;\n\
-            proxy_read_timeout 3600s;\n\
-            proxy_send_timeout 3600s;\n\
-        }\n\
-    }\n\
-}\n' > /etc/nginx/custom_nginx.conf
+if __name__ == "__main__":\n\
+    main()\n' > /usr/local/bin/proxy.py
 
-# 6. 生成启动入口脚本（放在 /usr/local/bin 避免被持久化卷挂载覆盖）
+# 6. 生成启动入口脚本
 RUN printf '#!/bin/sh\n\
-# 再次确保工作区和配置目录存在\n\
 mkdir -p /home/choreo/workspace /home/choreo/.config/opencode\n\
 echo "{\\\"permission\\\":{\\\"*\\\":\\\"allow\\\"}}" > /home/choreo/.config/opencode/opencode.json\n\
+# 建立目录映射，使 /files 能够精准映射到工作区目录\n\
+ln -sfn /home/choreo/workspace /home/choreo/workspace/files\n\
 \n\
-# 1. 启动轻量文件管理器 Filebrowser (监听 127.0.0.1:8080，路径映射到 /files)\n\
-filebrowser --port 8080 --address 127.0.0.1 --baseurl /files --root /home/choreo/workspace --database /tmp/filebrowser.db --noauth &\n\
+# 1. 后台启动 Python 内置 HTTP 文件服务器 (监听 8080)\n\
+python3 -m http.server 8080 --directory /home/choreo/workspace &\n\
 \n\
-# 2. 启动 OpenCode Web 服务 (监听 127.0.0.1:7861，带 --auto 开启自动接受权限)\n\
+# 2. 后台启动 OpenCode Web 服务 (监听 7861，带 --auto 开启自动权限)\n\
 cd /home/choreo/workspace && opencode web --auto --port 7861 --hostname 127.0.0.1 &\n\
 \n\
-# 3. 前台启动 Nginx 统一向外暴露端口 7860\n\
-exec nginx -c /etc/nginx/custom_nginx.conf -g "daemon off;"\n' > /usr/local/bin/entrypoint.sh \
+# 3. 前台运行 Python 路由器监听唯一对外端口 7860\n\
+exec python3 /usr/local/bin/proxy.py\n' > /usr/local/bin/entrypoint.sh \
     && chmod +x /usr/local/bin/entrypoint.sh
 
-# 设置环境变量（完全匹配你的原始环境变量设置）
+# 设置环境变量（完全恢复你原版的设置）
 ENV HOME=/home/choreo
 ENV OPENCODE_SERVER_PASSWORD=111111
 ENV OPENCODE_PERMISSION='{"*":"allow"}'
@@ -103,5 +105,4 @@ WORKDIR /home/choreo/workspace
 # 暴露 Choreo 唯一的 7860 端口
 EXPOSE 7860
 
-# 运行联合启动脚本
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

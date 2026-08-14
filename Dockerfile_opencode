@@ -60,16 +60,16 @@ RUN echo 'pid /tmp/nginx.pid;' > /etc/nginx/custom_nginx.conf && \
     echo '    }' >> /etc/nginx/custom_nginx.conf && \
     echo '}' >> /etc/nginx/custom_nginx.conf
 
-# 6. 生成启动脚本到 /usr/local/bin/entrypoint.sh
-# 注意：opencode 启动命令中增加了 --auto 参数
-RUN echo '#!/bin/sh' > /usr/local/bin/entrypoint.sh && \
-    echo 'mkdir -p /home/choreo/workspace /home/choreo/.config /home/choreo/.local /home/choreo/.opencode' >> /usr/local/bin/entrypoint.sh && \
-    echo 'filebrowser --port 8080 --address 127.0.0.1 --baseurl /files --root /home/choreo/workspace --database /tmp/filebrowser.db --noauth &' >> /usr/local/bin/entrypoint.sh && \
-    echo 'opencode web --port 7861 --hostname 127.0.0.1 --auto &' >> /usr/local/bin/entrypoint.sh && \
-    echo 'exec nginx -c /etc/nginx/custom_nginx.conf -g "daemon off;"' >> /usr/local/bin/entrypoint.sh && \
-    chmod +x /usr/local/bin/entrypoint.sh
+# 6. 生成安全的系统级入口脚本 /usr/local/bin/entrypoint.sh
+RUN printf '#!/bin/sh\n\
+mkdir -p /home/choreo/workspace /home/choreo/.config/opencode /home/choreo/.local /home/choreo/.opencode\n\
+printf "{\"permission\":\"allow\"}" > /home/choreo/.config/opencode/opencode.json\n\
+filebrowser --port 8080 --address 127.0.0.1 --baseurl /files --root /home/choreo/workspace --database /tmp/filebrowser.db --noauth &\n\
+opencode web --port 7861 --hostname 127.0.0.1 &\n\
+exec nginx -c /etc/nginx/custom_nginx.conf -g "daemon off;"\n' > /usr/local/bin/entrypoint.sh \
+    && chmod +x /usr/local/bin/entrypoint.sh
 
-# 设置环境变量（增加 OPENCODE_PERMISSION 支持自动授权）
+# 设置环境变量
 ENV HOME=/home/choreo
 ENV OPENCODE_SERVER_PASSWORD=111111
 ENV OPENCODE_PERMISSION='{"*":"allow"}'

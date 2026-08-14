@@ -1,126 +1,64 @@
 FROM node:20-bookworm-slim
 
-# 1. 安装基础依赖和 Python3
+# 1. 基础依赖：zip 用于多文件打包下载
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git ca-certificates curl tar python3 \
+    git ca-certificates curl tar zip \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 修复 xdg-open 报错（防止 Web 模式弹出本地浏览器报错）
+# 2. 避免 Web 模式调用本地浏览器时报 xdg-open 错误
 RUN printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/xdg-open \
     && chmod +x /usr/local/bin/xdg-open
 
-# 3. 下载 opencode 并解压到 /usr/local/bin/
+# 3. 下载 OpenCode
 RUN ARCH=$(uname -m) && \
     case "$ARCH" in \
       x86_64) ARCH=x64 ;; \
       aarch64) ARCH=arm64 ;; \
       *) echo "Unsupported arch: $ARCH"; exit 1 ;; \
     esac && \
-    curl -fsSL "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${ARCH}.tar.gz" | tar -xz -C /usr/local/bin/ && \
+    curl -fsSL \
+      "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${ARCH}.tar.gz" \
+      | tar -xz -C /usr/local/bin/ && \
     chmod +x /usr/local/bin/opencode
 
-# 4. 创建 Choreo 规范的 10099 用户/用户组，并预创建所需目录
+# 4. 创建 Choreo 要求的用户和目录
 RUN groupadd --gid 10099 choreo && \
     useradd --uid 10099 --gid 10099 -m -d /home/choreo choreo && \
-    mkdir -p /home/choreo/workspace /home/choreo/.config/opencode /home/choreo/.local /home/choreo/.opencode && \
-    chown -R 10099:10099 /home/choreo
+    mkdir -p \
+      /home/choreo/workspace \
+      /home/choreo/.config \
+      /home/choreo/.local \
+      /home/choreo/.opencode \
+      /opt/opencode-files && \
+    chown -R 10099:10099 /home/choreo /opt/opencode-files
 
-# 5. 安全生成零缓冲透明 Socket 路由与文件服务脚本 /usr/local/bin/server.py
-RUN python3 -c '
-code = """import socket, select, threading, http.server, socketserver
+# 5. 放入 /files 网关程序
+COPY --chown=10099:10099 server.mjs /opt/opencode-files/server.mjs
 
-LISTEN_PORT = 7860
-OPENCODE_PORT = 7861
-FILE_PORT = 8080
-WORKSPACE_DIR = "/home/choreo/workspace"
-
-class CustomFileHandler(http.server.SimpleHTTPRequestHandler):
-    def translate_path(self, path):
-        if path.startswith("/files"):
-            path = path[6:]
-            if not path or not path.startswith("/"):
-                path = "/" + path
-        return super().translate_path(path)
-
-def start_file_server():
-    class DualStackServer(socketserver.TCPServer):
-        allow_reuse_address = True
-    handler = lambda *args: CustomFileHandler(*args, directory=WORKSPACE_DIR)
-    with DualStackServer(("127.0.0.1", FILE_PORT), handler) as httpd:
-        httpd.serve_forever()
-
-def pipe_socket(client_sock, target_port):
-    try:
-        target_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        target_sock.connect(("127.0.0.1", target_port))
-        sockets = [client_sock, target_sock]
-        while True:
-            readable, _, _ = select.select(sockets, [], [], 120)
-            if not readable:
-                break
-            for s in readable:
-                other = target_sock if s is client_sock else client_sock
-                data = s.recv(8192)
-                if not data:
-                    return
-                other.sendall(data)
-    except Exception:
-        pass
-    finally:
-        try: client_sock.close()
-        except: pass
-        try: target_sock.close()
-        except: pass
-
-def start_proxy():
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(("0.0.0.0", LISTEN_PORT))
-    server.listen(128)
-    while True:
-        client_sock, _ = server.accept()
-        try:
-            peek_data = client_sock.recv(4096, socket.MSG_PEEK)
-            if not peek_data:
-                client_sock.close()
-                continue
-            lines = peek_data.decode("utf-8", errors="ignore").splitlines()
-            line = lines[0] if lines else ""
-            target_port = FILE_PORT if "/files" in line else OPENCODE_PORT
-            t = threading.Thread(target=pipe_socket, args=(client_sock, target_port))
-            t.daemon = True
-            t.start()
-        except Exception:
-            client_sock.close()
-
-if __name__ == "__main__":
-    threading.Thread(target=start_file_server, daemon=True).start()
-    start_proxy()
-"""
-open("/usr/local/bin/server.py", "w").write(code)
-'
-
-# 6. 生成启动入口脚本 /usr/local/bin/entrypoint.sh
-RUN python3 -c '
-sh_code = """#!/bin/sh
-mkdir -p /home/choreo/workspace /home/choreo/.config/opencode
-echo "{\\"permission\\":{\\"*\\":\\"allow\\"}}" > /home/choreo/.config/opencode/opencode.json
-cd /home/choreo/workspace && opencode web --port 7861 --hostname 127.0.0.1 &
-exec python3 /usr/local/bin/server.py
-"""
-open("/usr/local/bin/entrypoint.sh", "w").write(sh_code)
-' && chmod +x /usr/local/bin/entrypoint.sh
-
-# 设置环境变量
 ENV HOME=/home/choreo
-ENV OPENCODE_SERVER_PASSWORD=111111
-ENV OPENCODE_PERMISSION='{"*":"allow"}'
 
-# 7. 切换为 10099 非 root 用户
+# OpenCode Web Basic Auth
+# 请在 Choreo 控制台用 Secret 覆盖此值
+ENV OPENCODE_SERVER_USERNAME=opencode
+ENV OPENCODE_SERVER_PASSWORD=CHANGE_THIS_IN_CHOREO
+
+# 文件浏览器根目录；只会暴露这里面的文件
+ENV FILES_ROOT=/home/choreo/workspace
+
+# 联网搜索工具开关：启用 Exa websearch
+ENV OPENCODE_ENABLE_EXA=1
+
+# 减少 OpenCode 的工具确认弹窗：
+# edit 覆盖 write/edit/apply_patch；
+# websearch + webfetch 允许联网搜索与抓取；
+# external_directory 允许访问工作区外明确允许的路径。
+ENV OPENCODE_PERMISSION='{"edit":"allow","websearch":"allow","webfetch":"allow","external_directory":"allow"}'
+
 USER 10099
 WORKDIR /home/choreo/workspace
 
-# 暴露端口 7860
 EXPOSE 7860
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+# Node 网关对外监听 7860；
+# 它会在容器内启动 opencode web 到 127.0.0.1:7861。
+CMD ["node", "/opt/opencode-files/server.mjs"]

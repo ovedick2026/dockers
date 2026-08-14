@@ -1,6 +1,6 @@
 FROM node:20-bookworm-slim
 
-# 1. 安装基础依赖和 Python3（无需安装 Nginx）
+# 1. 安装基础依赖和 Python3
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates curl tar python3 \
     && rm -rf /var/lib/apt/lists/*
@@ -19,90 +19,86 @@ RUN ARCH=$(uname -m) && \
     curl -fsSL "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${ARCH}.tar.gz" | tar -xz -C /usr/local/bin/ && \
     chmod +x /usr/local/bin/opencode
 
-# 4. 创建 Choreo 规范的 10099 用户/用户组，预创建目录并配置默认自动授权
+# 4. 创建 Choreo 规范的 10099 用户/用户组，并预创建所需目录
 RUN groupadd --gid 10099 choreo && \
     useradd --uid 10099 --gid 10099 -m -d /home/choreo choreo && \
     mkdir -p /home/choreo/workspace /home/choreo/.config/opencode /home/choreo/.local /home/choreo/.opencode && \
-    echo '{"permission":{"*":"allow"}}' > /home/choreo/.config/opencode/opencode.json && \
     chown -R 10099:10099 /home/choreo
 
-# 5. 写入 20 行纯 Python 透明 TCP Socket 分流脚本（零缓冲，AI 回复秒出）
-RUN printf 'import socket, select, threading, os\n\
-LISTEN_PORT = 7860\n\
-OPENCODE_PORT = 7861\n\
-FILE_PORT = 8080\n\
-\n\
-def pipe_socket(client_sock, target_port):\n\
-    try:\n\
-        target_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n\
-        target_sock.connect(("127.0.0.1", target_port))\n\
-        sockets = [client_sock, target_sock]\n\
-        while True:\n\
-            readable, _, _ = select.select(sockets, [], [], 120)\n\
-            if not readable: break\n\
-            for s in readable:\n\
-                other = target_sock if s is client_sock else client_sock\n\
-                data = s.recv(8192)\n\
-                if not data: return\n\
-                other.sendall(data)\n\
-    except Exception:\n\
-        pass\n\
-    finally:\n\
-        try: client_sock.close()\n\
-        except: pass\n\
-        try: target_sock.close()\n\
-        except: pass\n\
-\n\
-def main():\n\
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n\
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n\
-    server.bind(("0.0.0.0", LISTEN_PORT))\n\
-    server.listen(128)\n\
-    while True:\n\
-        client_sock, _ = server.accept()\n\
-        try:\n\
-            peek_data = client_sock.recv(4096, socket.MSG_PEEK)\n\
-            if not peek_data:\n\
-                client_sock.close()\n\
-                continue\n\
-            line = peek_data.decode("utf-8", errors="ignore").split("\\r\\n")[0]\n\
-            target_port = FILE_PORT if "/files" in line else OPENCODE_PORT\n\
-            t = threading.Thread(target=pipe_socket, args=(client_sock, target_port))\n\
-            t.daemon = True\n\
-            t.start()\n\
-        except Exception:\n\
-            client_sock.close()\n\
-\n\
-if __name__ == "__main__":\n\
-    main()\n' > /usr/local/bin/proxy.py
+# 5. 生成纯 Python 转发与文件浏览服务脚本 /usr/local/bin/server.py（无软链接，无权限依赖）
+RUN echo 'import socket, select, threading, http.server, socketserver' > /usr/local/bin/server.py && \
+    echo 'LISTEN_PORT = 7860' >> /usr/local/bin/server.py && \
+    echo 'OPENCODE_PORT = 7861' >> /usr/local/bin/server.py && \
+    echo 'FILE_PORT = 8080' >> /usr/local/bin/server.py && \
+    echo 'WORKSPACE_DIR = "/home/choreo/workspace"' >> /usr/local/bin/server.py && \
+    echo 'class CustomFileHandler(http.server.SimpleHTTPRequestHandler):' >> /usr/local/bin/server.py && \
+    echo '    def translate_path(self, path):' >> /usr/local/bin/server.py && \
+    echo '        if path.startswith("/files"):' >> /usr/local/bin/server.py && \
+    echo '            path = path[6:]' >> /usr/local/bin/server.py && \
+    echo '            if not path or not path.startswith("/"): path = "/" + path' >> /usr/local/bin/server.py && \
+    echo '        return super().translate_path(path)' >> /usr/local/bin/server.py && \
+    echo 'def start_file_server():' >> /usr/local/bin/server.py && \
+    echo '    class DualStackServer(socketserver.TCPServer): allow_reuse_address = True' >> /usr/local/bin/server.py && \
+    echo '    handler = lambda *args: CustomFileHandler(*args, directory=WORKSPACE_DIR)' >> /usr/local/bin/server.py && \
+    echo '    with DualStackServer(("127.0.0.1", FILE_PORT), handler) as httpd:' >> /usr/local/bin/server.py && \
+    echo '        httpd.serve_forever()' >> /usr/local/bin/server.py && \
+    echo 'def pipe_socket(client_sock, target_port):' >> /usr/local/bin/server.py && \
+    echo '    try:' >> /usr/local/bin/server.py && \
+    echo '        target_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)' >> /usr/local/bin/server.py && \
+    echo '        target_sock.connect(("127.0.0.1", target_port))' >> /usr/local/bin/server.py && \
+    echo '        sockets = [client_sock, target_sock]' >> /usr/local/bin/server.py && \
+    echo '        while True:' >> /usr/local/bin/server.py && \
+    echo '            readable, _, _ = select.select(sockets, [], [], 120)' >> /usr/local/bin/server.py && \
+    echo '            if not readable: break' >> /usr/local/bin/server.py && \
+    echo '            for s in readable:' >> /usr/local/bin/server.py && \
+    echo '                other = target_sock if s is client_sock else client_sock' >> /usr/local/bin/server.py && \
+    echo '                data = s.recv(8192)' >> /usr/local/bin/server.py && \
+    echo '                if not data: return' >> /usr/local/bin/server.py && \
+    echo '                other.sendall(data)' >> /usr/local/bin/server.py && \
+    echo '    except Exception: pass' >> /usr/local/bin/server.py && \
+    echo '    finally:' >> /usr/local/bin/server.py && \
+    echo '        try: client_sock.close()' >> /usr/local/bin/server.py && \
+    echo '        except: pass' >> /usr/local/bin/server.py && \
+    echo '        try: target_sock.close()' >> /usr/local/bin/server.py && \
+    echo '        except: pass' >> /usr/local/bin/server.py && \
+    echo 'def start_proxy():' >> /usr/local/bin/server.py && \
+    echo '    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)' >> /usr/local/bin/server.py && \
+    echo '    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)' >> /usr/local/bin/server.py && \
+    echo '    server.bind(("0.0.0.0", LISTEN_PORT))' >> /usr/local/bin/server.py && \
+    echo '    server.listen(128)' >> /usr/local/bin/server.py && \
+    echo '    while True:' >> /usr/local/bin/server.py && \
+    echo '        client_sock, _ = server.accept()' >> /usr/local/bin/server.py && \
+    echo '        try:' >> /usr/local/bin/server.py && \
+    echo '            peek_data = client_sock.recv(4096, socket.MSG_PEEK)' >> /usr/local/bin/server.py && \
+    echo '            if not peek_data: client_sock.close(); continue' >> /usr/local/bin/server.py && \
+    echo '            line = peek_data.decode("utf-8", errors="ignore").split("\r\n")[0]' >> /usr/local/bin/server.py && \
+    echo '            target_port = FILE_PORT if "/files" in line else OPENCODE_PORT' >> /usr/local/bin/server.py && \
+    echo '            t = threading.Thread(target=pipe_socket, args=(client_sock, target_port))' >> /usr/local/bin/server.py && \
+    echo '            t.daemon = True' >> /usr/local/bin/server.py && \
+    echo '            t.start()' >> /usr/local/bin/server.py && \
+    echo '        except Exception: client_sock.close()' >> /usr/local/bin/server.py && \
+    echo 'if __name__ == "__main__":' >> /usr/local/bin/server.py && \
+    echo '    threading.Thread(target=start_file_server, daemon=True).start()' >> /usr/local/bin/server.py && \
+    echo '    start_proxy()' >> /usr/local/bin/server.py
 
-# 6. 生成启动入口脚本
-RUN printf '#!/bin/sh\n\
-mkdir -p /home/choreo/workspace /home/choreo/.config/opencode\n\
-echo "{\\\"permission\\\":{\\\"*\\\":\\\"allow\\\"}}" > /home/choreo/.config/opencode/opencode.json\n\
-# 建立目录映射，使 /files 能够精准映射到工作区目录\n\
-ln -sfn /home/choreo/workspace /home/choreo/workspace/files\n\
-\n\
-# 1. 后台启动 Python 内置 HTTP 文件服务器 (监听 8080)\n\
-python3 -m http.server 8080 --directory /home/choreo/workspace &\n\
-\n\
-# 2. 后台启动 OpenCode Web 服务 (监听 7861，带 --auto 开启自动权限)\n\
-cd /home/choreo/workspace && opencode web --auto --port 7861 --hostname 127.0.0.1 &\n\
-\n\
-# 3. 前台运行 Python 路由器监听唯一对外端口 7860\n\
-exec python3 /usr/local/bin/proxy.py\n' > /usr/local/bin/entrypoint.sh \
-    && chmod +x /usr/local/bin/entrypoint.sh
+# 6. 生成入口启动脚本 /usr/local/bin/entrypoint.sh
+RUN echo '#!/bin/sh' > /usr/local/bin/entrypoint.sh && \
+    echo 'mkdir -p /home/choreo/workspace /home/choreo/.config/opencode' >> /usr/local/bin/entrypoint.sh && \
+    echo 'echo "{\"permission\":\"allow\"}" > /home/choreo/.config/opencode/opencode.json' >> /usr/local/bin/entrypoint.sh && \
+    echo 'cd /home/choreo/workspace && opencode web --port 7861 --hostname 127.0.0.1 &' >> /usr/local/bin/entrypoint.sh && \
+    echo 'exec python3 /usr/local/bin/server.py' >> /usr/local/bin/entrypoint.sh && \
+    chmod +x /usr/local/bin/entrypoint.sh
 
-# 设置环境变量（完全恢复你原版的设置）
+# 设置环境变量
 ENV HOME=/home/choreo
 ENV OPENCODE_SERVER_PASSWORD=111111
 ENV OPENCODE_PERMISSION='{"*":"allow"}'
 
-# 7. 切换为 10099 非 root 用户
+# 7. 切换为 10099 用户
 USER 10099
 WORKDIR /home/choreo/workspace
 
-# 暴露 Choreo 唯一的 7860 端口
+# 暴露端口 7860
 EXPOSE 7860
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

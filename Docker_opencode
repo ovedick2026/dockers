@@ -19,18 +19,21 @@ RUN ARCH=$(uname -m) && \
     curl -fsSL "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${ARCH}.tar.gz" | tar -xz -C /usr/local/bin/ && \
     chmod +x /usr/local/bin/opencode
 
-# 4. 预先创建配置与工作区目录，并将 /home/node 文件夹的所有权赋予 node 用户
-RUN mkdir -p /home/node/workspace /home/node/.config /home/node/.local /home/node/.opencode \
-    && chown -R node:node /home/node
+# 4. 创建 Choreo 规范的 10099 用户/用户组，并预先创建所需目录
+RUN groupadd --gid 10099 choreo && \
+    useradd --uid 10099 --gid 10099 -m -d /home/choreo choreo && \
+    mkdir -p /home/choreo/workspace /home/choreo/.config /home/choreo/.local /home/choreo/.opencode && \
+    chown -R 10099:10099 /home/choreo
 
-ENV HOME=/home/node
+# 设置环境变量指向新的 HOME 路径
+ENV HOME=/home/choreo
 ENV OPENCODE_SERVER_PASSWORD=111111
 
-# 切换回低权限的 node 用户
-USER node
-WORKDIR /home/node/workspace
+# 5. 切换为 Choreo 强制要求的 10099 数字 UID 用户
+USER 10099
+WORKDIR /home/choreo/workspace
 
 EXPOSE 7860
 
-# 5. 直接启动服务
+# 6. 启动 OpenCode 网页端服务
 CMD ["opencode", "web", "--port", "7860", "--hostname", "0.0.0.0"]

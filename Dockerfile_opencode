@@ -9,78 +9,64 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/xdg-open \
     && chmod +x /usr/local/bin/xdg-open
 
-# 3. 安装 opencode 和 filebrowser
+# 3. 安装 opencode 和 filebrowser 到系统目录 /usr/local/bin/
 RUN ARCH=$(uname -m) && \
     case "$ARCH" in \
       x86_64) OPENCODE_ARCH=x64; FB_ARCH=amd64 ;; \
       aarch64) OPENCODE_ARCH=arm64; FB_ARCH=arm64 ;; \
       *) echo "Unsupported arch: $ARCH"; exit 1 ;; \
     esac && \
-    # 下载 OpenCode
     curl -fsSL "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${OPENCODE_ARCH}.tar.gz" | tar -xz -C /usr/local/bin/ && \
     chmod +x /usr/local/bin/opencode && \
-    # 下载 Filebrowser
     curl -fsSL "https://github.com/filebrowser/filebrowser/releases/latest/download/linux-${FB_ARCH}-filebrowser.tar.gz" | tar -xz -C /usr/local/bin/ filebrowser && \
     chmod +x /usr/local/bin/filebrowser
 
-# 4. 创建 Choreo 规范的 10099 用户/用户组，并预先创建所需目录
+# 4. 创建 Choreo 规范的 10099 用户
 RUN groupadd --gid 10099 choreo && \
-    useradd --uid 10099 --gid 10099 -m -d /home/choreo choreo && \
-    mkdir -p /home/choreo/workspace /home/choreo/.config /home/choreo/.local /home/choreo/.opencode && \
-    chown -R 10099:10099 /home/choreo
+    useradd --uid 10099 --gid 10099 -m -d /home/choreo choreo
 
-# 5. 配置无根（非 Root 10099）专用的 Nginx 配置文件
-RUN printf 'pid /tmp/nginx.pid;\n\
-events { worker_connections 1024; }\n\
-http {\n\
-    include /etc/nginx/mime.types;\n\
-    default_type application/octet-stream;\n\
-    client_body_temp_path /tmp/nginx_client_body;\n\
-    proxy_temp_path /tmp/nginx_proxy;\n\
-    fastcgi_temp_path /tmp/nginx_fastcgi;\n\
-    uwsgi_temp_path /tmp/nginx_uwsgi;\n\
-    scgi_temp_path /tmp/nginx_scgi;\n\
-    access_log /tmp/nginx_access.log;\n\
-    error_log /tmp/nginx_error.log;\n\
-\n\
-    server {\n\
-        listen 7860;\n\
-\n\
-        # 路由 1: 访问 /files/ 转发到 Filebrowser (内部 8080 端口)\n\
-        location /files/ {\n\
-            proxy_pass http://127.0.0.1:8080;\n\
-            proxy_set_header Host $host;\n\
-            proxy_set_header X-Real-IP $remote_addr;\n\
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
-            proxy_set_header X-Forwarded-Proto $scheme;\n\
-        }\n\
-\n\
-        # 路由 2: 根路径 / 转发到 OpenCode (内部 7861 端口)\n\
-        location / {\n\
-            proxy_pass http://127.0.0.1:7861;\n\
-            proxy_http_version 1.1;\n\
-            proxy_set_header Upgrade $http_upgrade;\n\
-            proxy_set_header Connection "upgrade";\n\
-            proxy_set_header Host $host;\n\
-            proxy_set_header X-Real-IP $remote_addr;\n\
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
-            proxy_set_header X-Forwarded-Proto $scheme;\n\
-        }\n\
-    }\n\
-}\n' > /home/choreo/nginx.conf
+# 5. 生成系统级 Nginx 配置文件（保存在 /etc/nginx/custom_nginx.conf，避开家目录挂载）
+RUN echo 'pid /tmp/nginx.pid;' > /etc/nginx/custom_nginx.conf && \
+    echo 'events { worker_connections 1024; }' >> /etc/nginx/custom_nginx.conf && \
+    echo 'http {' >> /etc/nginx/custom_nginx.conf && \
+    echo '    include /etc/nginx/mime.types;' >> /etc/nginx/custom_nginx.conf && \
+    echo '    default_type application/octet-stream;' >> /etc/nginx/custom_nginx.conf && \
+    echo '    client_body_temp_path /tmp/nginx_client_body;' >> /etc/nginx/custom_nginx.conf && \
+    echo '    proxy_temp_path /tmp/nginx_proxy;' >> /etc/nginx/custom_nginx.conf && \
+    echo '    fastcgi_temp_path /tmp/nginx_fastcgi;' >> /etc/nginx/custom_nginx.conf && \
+    echo '    uwsgi_temp_path /tmp/nginx_uwsgi;' >> /etc/nginx/custom_nginx.conf && \
+    echo '    scgi_temp_path /tmp/nginx_scgi;' >> /etc/nginx/custom_nginx.conf && \
+    echo '    access_log /tmp/nginx_access.log;' >> /etc/nginx/custom_nginx.conf && \
+    echo '    error_log /tmp/nginx_error.log;' >> /etc/nginx/custom_nginx.conf && \
+    echo '    server {' >> /etc/nginx/custom_nginx.conf && \
+    echo '        listen 7860;' >> /etc/nginx/custom_nginx.conf && \
+    echo '        location /files/ {' >> /etc/nginx/custom_nginx.conf && \
+    echo '            proxy_pass http://127.0.0.1:8080;' >> /etc/nginx/custom_nginx.conf && \
+    echo '            proxy_set_header Host $host;' >> /etc/nginx/custom_nginx.conf && \
+    echo '            proxy_set_header X-Real-IP $remote_addr;' >> /etc/nginx/custom_nginx.conf && \
+    echo '            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;' >> /etc/nginx/custom_nginx.conf && \
+    echo '            proxy_set_header X-Forwarded-Proto $scheme;' >> /etc/nginx/custom_nginx.conf && \
+    echo '        }' >> /etc/nginx/custom_nginx.conf && \
+    echo '        location / {' >> /etc/nginx/custom_nginx.conf && \
+    echo '            proxy_pass http://127.0.0.1:7861;' >> /etc/nginx/custom_nginx.conf && \
+    echo '            proxy_http_version 1.1;' >> /etc/nginx/custom_nginx.conf && \
+    echo '            proxy_set_header Upgrade $http_upgrade;' >> /etc/nginx/custom_nginx.conf && \
+    echo '            proxy_set_header Connection "upgrade";' >> /etc/nginx/custom_nginx.conf && \
+    echo '            proxy_set_header Host $host;' >> /etc/nginx/custom_nginx.conf && \
+    echo '            proxy_set_header X-Real-IP $remote_addr;' >> /etc/nginx/custom_nginx.conf && \
+    echo '            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;' >> /etc/nginx/custom_nginx.conf && \
+    echo '            proxy_set_header X-Forwarded-Proto $scheme;' >> /etc/nginx/custom_nginx.conf && \
+    echo '        }' >> /etc/nginx/custom_nginx.conf && \
+    echo '    }' >> /etc/nginx/custom_nginx.conf && \
+    echo '}' >> /etc/nginx/custom_nginx.conf
 
-# 6. 生成启动脚本 entrypoint.sh
-RUN printf '#!/bin/sh\n\
-# 1. 启动轻量文件管理器（内部端口 8080，基础路径设为 /files）\n\
-filebrowser --port 8080 --address 127.0.0.1 --baseurl /files --root /home/choreo/workspace --database /home/choreo/.filebrowser.db --noauth &\n\
-\n\
-# 2. 启动 OpenCode 网页服务（内部端口 7861）\n\
-opencode web --port 7861 --hostname 127.0.0.1 &\n\
-\n\
-# 3. 前台启动 Nginx 统一监听对外端口 7860\n\
-exec nginx -c /home/choreo/nginx.conf -g "daemon off;"\n' > /home/choreo/entrypoint.sh \
-    && chmod +x /home/choreo/entrypoint.sh \
-    && chown 10099:10099 /home/choreo/entrypoint.sh /home/choreo/nginx.conf
+# 6. 生成启动脚本到系统路径 /usr/local/bin/entrypoint.sh
+RUN echo '#!/bin/sh' > /usr/local/bin/entrypoint.sh && \
+    echo 'mkdir -p /home/choreo/workspace /home/choreo/.config /home/choreo/.local /home/choreo/.opencode' >> /usr/local/bin/entrypoint.sh && \
+    echo 'filebrowser --port 8080 --address 127.0.0.1 --baseurl /files --root /home/choreo/workspace --database /tmp/filebrowser.db --noauth &' >> /usr/local/bin/entrypoint.sh && \
+    echo 'opencode web --port 7861 --hostname 127.0.0.1 &' >> /usr/local/bin/entrypoint.sh && \
+    echo 'exec nginx -c /etc/nginx/custom_nginx.conf -g "daemon off;"' >> /usr/local/bin/entrypoint.sh && \
+    chmod +x /usr/local/bin/entrypoint.sh
 
 # 设置环境变量
 ENV HOME=/home/choreo
@@ -93,5 +79,5 @@ WORKDIR /home/choreo/workspace
 # 暴露端口
 EXPOSE 7860
 
-# 关键修改：使用 ENTRYPOINT 覆盖基础镜像的 node 命令入口
-ENTRYPOINT ["/home/choreo/entrypoint.sh"]
+# 入口脚本指向绝对安全的系统路径
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

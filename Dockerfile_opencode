@@ -90,7 +90,8 @@ ENV OPENCODE_SERVER_PASSWORD=111111
 USER 10099
 WORKDIR /home/choreo/workspace
 
-# 只需要暴露这一个 7860 端口
+# 暴露端口
 EXPOSE 7860
 
-CMD ["/home/choreo/entrypoint.sh"]
+# 关键修改：使用 ENTRYPOINT 覆盖基础镜像的 node 命令入口
+ENTRYPOINT ["/home/choreo/entrypoint.sh"]

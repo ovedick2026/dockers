@@ -25,54 +25,63 @@ RUN ARCH=$(uname -m) && \
 RUN groupadd --gid 10099 choreo && \
     useradd --uid 10099 --gid 10099 -m -d /home/choreo choreo
 
-# 5. 生成系统级 Nginx 配置文件
-RUN echo 'pid /tmp/nginx.pid;' > /etc/nginx/custom_nginx.conf && \
-    echo 'events { worker_connections 1024; }' >> /etc/nginx/custom_nginx.conf && \
-    echo 'http {' >> /etc/nginx/custom_nginx.conf && \
-    echo '    include /etc/nginx/mime.types;' >> /etc/nginx/custom_nginx.conf && \
-    echo '    default_type application/octet-stream;' >> /etc/nginx/custom_nginx.conf && \
-    echo '    client_body_temp_path /tmp/nginx_client_body;' >> /etc/nginx/custom_nginx.conf && \
-    echo '    proxy_temp_path /tmp/nginx_proxy;' >> /etc/nginx/custom_nginx.conf && \
-    echo '    fastcgi_temp_path /tmp/nginx_fastcgi;' >> /etc/nginx/custom_nginx.conf && \
-    echo '    uwsgi_temp_path /tmp/nginx_uwsgi;' >> /etc/nginx/custom_nginx.conf && \
-    echo '    scgi_temp_path /tmp/nginx_scgi;' >> /etc/nginx/custom_nginx.conf && \
-    echo '    access_log /tmp/nginx_access.log;' >> /etc/nginx/custom_nginx.conf && \
-    echo '    error_log /tmp/nginx_error.log;' >> /etc/nginx/custom_nginx.conf && \
-    echo '    server {' >> /etc/nginx/custom_nginx.conf && \
-    echo '        listen 7860;' >> /etc/nginx/custom_nginx.conf && \
-    echo '        location /files/ {' >> /etc/nginx/custom_nginx.conf && \
-    echo '            proxy_pass http://127.0.0.1:8080;' >> /etc/nginx/custom_nginx.conf && \
-    echo '            proxy_set_header Host $host;' >> /etc/nginx/custom_nginx.conf && \
-    echo '            proxy_set_header X-Real-IP $remote_addr;' >> /etc/nginx/custom_nginx.conf && \
-    echo '            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;' >> /etc/nginx/custom_nginx.conf && \
-    echo '            proxy_set_header X-Forwarded-Proto $scheme;' >> /etc/nginx/custom_nginx.conf && \
-    echo '        }' >> /etc/nginx/custom_nginx.conf && \
-    echo '        location / {' >> /etc/nginx/custom_nginx.conf && \
-    echo '            proxy_pass http://127.0.0.1:7861;' >> /etc/nginx/custom_nginx.conf && \
-    echo '            proxy_http_version 1.1;' >> /etc/nginx/custom_nginx.conf && \
-    echo '            proxy_set_header Upgrade $http_upgrade;' >> /etc/nginx/custom_nginx.conf && \
-    echo '            proxy_set_header Connection "upgrade";' >> /etc/nginx/custom_nginx.conf && \
-    echo '            proxy_set_header Host $host;' >> /etc/nginx/custom_nginx.conf && \
-    echo '            proxy_set_header X-Real-IP $remote_addr;' >> /etc/nginx/custom_nginx.conf && \
-    echo '            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;' >> /etc/nginx/custom_nginx.conf && \
-    echo '            proxy_set_header X-Forwarded-Proto $scheme;' >> /etc/nginx/custom_nginx.conf && \
-    echo '        }' >> /etc/nginx/custom_nginx.conf && \
-    echo '    }' >> /etc/nginx/custom_nginx.conf && \
-    echo '}' >> /etc/nginx/custom_nginx.conf
+# 5. 生成系统级 Nginx 配置文件（重点：关闭缓冲以支持 AI 流式传输）
+RUN printf 'pid /tmp/nginx.pid;\n\
+events { worker_connections 1024; }\n\
+http {\n\
+    include /etc/nginx/mime.types;\n\
+    default_type application/octet-stream;\n\
+    client_body_temp_path /tmp/nginx_client_body;\n\
+    proxy_temp_path /tmp/nginx_proxy;\n\
+    fastcgi_temp_path /tmp/nginx_fastcgi;\n\
+    uwsgi_temp_path /tmp/nginx_uwsgi;\n\
+    scgi_temp_path /tmp/nginx_scgi;\n\
+    access_log /tmp/nginx_access.log;\n\
+    error_log /tmp/nginx_error.log;\n\
+\n\
+    server {\n\
+        listen 7860;\n\
+\n\
+        # 路由 1: 文件管理器\n\
+        location /files/ {\n\
+            proxy_pass http://127.0.0.1:8080;\n\
+            proxy_set_header Host $host;\n\
+            proxy_set_header X-Real-IP $remote_addr;\n\
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
+            proxy_set_header X-Forwarded-Proto $scheme;\n\
+        }\n\
+\n\
+        # 路由 2: OpenCode 网页服务\n\
+        location / {\n\
+            proxy_pass http://127.0.0.1:7861;\n\
+            proxy_http_version 1.1;\n\
+            proxy_set_header Upgrade $http_upgrade;\n\
+            proxy_set_header Connection "upgrade";\n\
+            proxy_set_header Host $host;\n\
+            proxy_set_header X-Real-IP $remote_addr;\n\
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
+            proxy_set_header X-Forwarded-Proto $scheme;\n\
+            # 关键修改：关闭 Nginx 代理缓冲与缓存，允许 SSE 流式推送到前端\n\
+            proxy_buffering off;\n\
+            proxy_cache off;\n\
+            proxy_read_timeout 3600s;\n\
+            proxy_send_timeout 3600s;\n\
+        }\n\
+    }\n\
+}\n' > /etc/nginx/custom_nginx.conf
 
-# 6. 生成安全的系统级入口脚本（在可写的 /tmp 下建工作区和配置文件）
+# 6. 生成入口脚本（修正 opencode.json 的 JSON 结构）
 RUN printf '#!/bin/sh\n\
 mkdir -p /tmp/workspace /tmp/.config/opencode /tmp/.local /tmp/.opencode\n\
-printf "{\"permission\":\"allow\"}" > /tmp/.config/opencode/opencode.json\n\
+printf "{\\\"permission\\\":{\\\"*\\\":\\\"allow\\\"}}" > /tmp/.config/opencode/opencode.json\n\
 filebrowser --port 8080 --address 127.0.0.1 --baseurl /files --root /tmp/workspace --database /tmp/filebrowser.db --noauth &\n\
 cd /tmp/workspace && opencode web --port 7861 --hostname 127.0.0.1 &\n\
 exec nginx -c /etc/nginx/custom_nginx.conf -g "daemon off;"\n' > /usr/local/bin/entrypoint.sh \
     && chmod +x /usr/local/bin/entrypoint.sh
 
-# 设置 HOME 为 /tmp，确保 OpenCode 读写配置正常
+# 设置环境变量
 ENV HOME=/tmp
 ENV OPENCODE_SERVER_PASSWORD=111111
-ENV OPENCODE_PERMISSION='{"*":"allow"}'
 
 # 切换为 10099 非 root 用户
 USER 10099

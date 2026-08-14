@@ -1,0 +1,14 @@
+FROM node:20-bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ca-certificates curl tar \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV HOME=/home/node
+USER node
+
+RUN printf '#!/bin/bash\nset -e\nOPENCODE_BIN="$HOME/.opencode/bin/opencode"\nif [ ! -x "$OPENCODE_BIN" ]; then\n  mkdir -p "$HOME/.opencode/bin"\n  ARCH=$(uname -m)\n  case "$ARCH" in\n    x86_64) ARCH=x64 ;;\n    aarch64) ARCH=arm64 ;;\n    *) echo "Unsupported arch: $ARCH"; exit 1 ;;\n  esac\n  curl --connect-timeout 60 --retry 3 -fsSL -o /tmp/opencode.tar.gz "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${ARCH}.tar.gz"\n  tar -xzf /tmp/opencode.tar.gz -C /tmp\n  mv /tmp/opencode "$OPENCODE_BIN"\n  chmod 755 "$OPENCODE_BIN"\n  rm -f /tmp/opencode.tar.gz\nfi\nexec "$OPENCODE_BIN" web --port 7860 --hostname 0.0.0.0\n' > "$HOME/entrypoint.sh" && chmod +x "$HOME/entrypoint.sh"
+
+WORKDIR /home/node/workspace
+EXPOSE 7860
+ENTRYPOINT ["/home/node/entrypoint.sh"]

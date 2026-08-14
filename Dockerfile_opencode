@@ -60,23 +60,23 @@ RUN echo 'pid /tmp/nginx.pid;' > /etc/nginx/custom_nginx.conf && \
     echo '    }' >> /etc/nginx/custom_nginx.conf && \
     echo '}' >> /etc/nginx/custom_nginx.conf
 
-# 6. 生成安全的系统级入口脚本 /usr/local/bin/entrypoint.sh
+# 6. 生成安全的系统级入口脚本（在可写的 /tmp 下建工作区和配置文件）
 RUN printf '#!/bin/sh\n\
-mkdir -p /home/choreo/workspace /home/choreo/.config/opencode /home/choreo/.local /home/choreo/.opencode\n\
-printf "{\"permission\":\"allow\"}" > /home/choreo/.config/opencode/opencode.json\n\
-filebrowser --port 8080 --address 127.0.0.1 --baseurl /files --root /home/choreo/workspace --database /tmp/filebrowser.db --noauth &\n\
-opencode web --port 7861 --hostname 127.0.0.1 &\n\
+mkdir -p /tmp/workspace /tmp/.config/opencode /tmp/.local /tmp/.opencode\n\
+printf "{\"permission\":\"allow\"}" > /tmp/.config/opencode/opencode.json\n\
+filebrowser --port 8080 --address 127.0.0.1 --baseurl /files --root /tmp/workspace --database /tmp/filebrowser.db --noauth &\n\
+cd /tmp/workspace && opencode web --port 7861 --hostname 127.0.0.1 &\n\
 exec nginx -c /etc/nginx/custom_nginx.conf -g "daemon off;"\n' > /usr/local/bin/entrypoint.sh \
     && chmod +x /usr/local/bin/entrypoint.sh
 
-# 设置环境变量
-ENV HOME=/home/choreo
+# 设置 HOME 为 /tmp，确保 OpenCode 读写配置正常
+ENV HOME=/tmp
 ENV OPENCODE_SERVER_PASSWORD=111111
 ENV OPENCODE_PERMISSION='{"*":"allow"}'
 
 # 切换为 10099 非 root 用户
 USER 10099
-WORKDIR /home/choreo/workspace
+WORKDIR /tmp/workspace
 
 # 暴露端口
 EXPOSE 7860

@@ -1,8 +1,15 @@
 FROM node:20-bookworm-slim
 
+# 安装必要依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates curl tar \
     && rm -rf /var/lib/apt/lists/*
+
+# -------------------------------------------------------------
+# 修复：创建假的 xdg-open 脚本，防止 opencode web 尝试打开本地浏览器时抛出 ENOENT 错误
+RUN printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/xdg-open \
+    && chmod +x /usr/local/bin/xdg-open
+# -------------------------------------------------------------
 
 ENV HOME=/home/node
 ENV OPENCODE_SERVER_PASSWORD=111111
@@ -12,4 +19,6 @@ RUN printf '#!/bin/bash\nset -e\nOPENCODE_BIN="$HOME/.opencode/bin/opencode"\nif
 
 WORKDIR /home/node/workspace
 EXPOSE 7860
+
+USER 10099
 ENTRYPOINT ["/home/node/entrypoint.sh"]

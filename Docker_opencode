@@ -1,24 +1,36 @@
 FROM node:20-bookworm-slim
 
-# 安装必要依赖
+# 1. 安装基础依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates curl tar \
     && rm -rf /var/lib/apt/lists/*
 
-# -------------------------------------------------------------
-# 修复：创建假的 xdg-open 脚本，防止 opencode web 尝试打开本地浏览器时抛出 ENOENT 错误
+# 2. 修复 xdg-open 报错（创建伪造脚本，防止 Web 模式弹出本地浏览器报错）
 RUN printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/xdg-open \
     && chmod +x /usr/local/bin/xdg-open
-# -------------------------------------------------------------
+
+# 3. 构建阶段：直接下载 opencode 并解压到系统全局可执行目录 /usr/local/bin/
+RUN ARCH=$(uname -m) && \
+    case "$ARCH" in \
+      x86_64) ARCH=x64 ;; \
+      aarch64) ARCH=arm64 ;; \
+      *) echo "Unsupported arch: $ARCH"; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${ARCH}.tar.gz" | tar -xz -C /usr/local/bin/ && \
+    chmod +x /usr/local/bin/opencode
+
+# 4. 预先创建配置与工作区目录，并将 /home/node 文件夹的所有权赋予 node 用户
+RUN mkdir -p /home/node/workspace /home/node/.config /home/node/.local /home/node/.opencode \
+    && chown -R node:node /home/node
 
 ENV HOME=/home/node
 ENV OPENCODE_SERVER_PASSWORD=111111
+
+# 切换回低权限的 node 用户
 USER node
-
-RUN printf '#!/bin/bash\nset -e\nOPENCODE_BIN="$HOME/.opencode/bin/opencode"\nif [ ! -x "$OPENCODE_BIN" ]; then\n  mkdir -p "$HOME/.opencode/bin"\n  ARCH=$(uname -m)\n  case "$ARCH" in\n    x86_64) ARCH=x64 ;;\n    aarch64) ARCH=arm64 ;;\n    *) echo "Unsupported arch: $ARCH"; exit 1 ;;\n  esac\n  curl --connect-timeout 60 --retry 3 -fsSL -o /tmp/opencode.tar.gz "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${ARCH}.tar.gz"\n  tar -xzf /tmp/opencode.tar.gz -C /tmp\n  mv /tmp/opencode "$OPENCODE_BIN"\n  chmod 755 "$OPENCODE_BIN"\n  rm -f /tmp/opencode.tar.gz\nfi\nexec "$OPENCODE_BIN" web --port 7860 --hostname 0.0.0.0\n' > "$HOME/entrypoint.sh" && chmod +x "$HOME/entrypoint.sh"
-
 WORKDIR /home/node/workspace
+
 EXPOSE 7860
 
-USER 10099
-ENTRYPOINT ["/home/node/entrypoint.sh"]
+# 5. 直接启动服务
+CMD ["opencode", "web", "--port", "7860", "--hostname", "0.0.0.0"]

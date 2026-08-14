@@ -25,7 +25,7 @@ RUN ARCH=$(uname -m) && \
 RUN groupadd --gid 10099 choreo && \
     useradd --uid 10099 --gid 10099 -m -d /home/choreo choreo
 
-# 5. 生成系统级 Nginx 配置文件（保存在 /etc/nginx/custom_nginx.conf，避开家目录挂载）
+# 5. 生成系统级 Nginx 配置文件
 RUN echo 'pid /tmp/nginx.pid;' > /etc/nginx/custom_nginx.conf && \
     echo 'events { worker_connections 1024; }' >> /etc/nginx/custom_nginx.conf && \
     echo 'http {' >> /etc/nginx/custom_nginx.conf && \
@@ -60,17 +60,19 @@ RUN echo 'pid /tmp/nginx.pid;' > /etc/nginx/custom_nginx.conf && \
     echo '    }' >> /etc/nginx/custom_nginx.conf && \
     echo '}' >> /etc/nginx/custom_nginx.conf
 
-# 6. 生成启动脚本到系统路径 /usr/local/bin/entrypoint.sh
+# 6. 生成启动脚本到 /usr/local/bin/entrypoint.sh
+# 注意：opencode 启动命令中增加了 --auto 参数
 RUN echo '#!/bin/sh' > /usr/local/bin/entrypoint.sh && \
     echo 'mkdir -p /home/choreo/workspace /home/choreo/.config /home/choreo/.local /home/choreo/.opencode' >> /usr/local/bin/entrypoint.sh && \
     echo 'filebrowser --port 8080 --address 127.0.0.1 --baseurl /files --root /home/choreo/workspace --database /tmp/filebrowser.db --noauth &' >> /usr/local/bin/entrypoint.sh && \
-    echo 'opencode web --port 7861 --hostname 127.0.0.1 &' >> /usr/local/bin/entrypoint.sh && \
+    echo 'opencode web --port 7861 --hostname 127.0.0.1 --auto &' >> /usr/local/bin/entrypoint.sh && \
     echo 'exec nginx -c /etc/nginx/custom_nginx.conf -g "daemon off;"' >> /usr/local/bin/entrypoint.sh && \
     chmod +x /usr/local/bin/entrypoint.sh
 
-# 设置环境变量
+# 设置环境变量（增加 OPENCODE_PERMISSION 支持自动授权）
 ENV HOME=/home/choreo
 ENV OPENCODE_SERVER_PASSWORD=111111
+ENV OPENCODE_PERMISSION='{"*":"allow"}'
 
 # 切换为 10099 非 root 用户
 USER 10099
@@ -79,5 +81,4 @@ WORKDIR /home/choreo/workspace
 # 暴露端口
 EXPOSE 7860
 
-# 入口脚本指向绝对安全的系统路径
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

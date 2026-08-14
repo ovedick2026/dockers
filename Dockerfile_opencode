@@ -5,11 +5,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates curl tar nginx-light \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 修复 xdg-open 报错
+# 2. 修复 xdg-open 报错（防止 Web 模式弹出本地浏览器报错）
 RUN printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/xdg-open \
     && chmod +x /usr/local/bin/xdg-open
 
-# 3. 安装 opencode 和 filebrowser 到系统目录 /usr/local/bin/
+# 3. 下载 opencode 和 filebrowser 到系统全局目录 /usr/local/bin/
 RUN ARCH=$(uname -m) && \
     case "$ARCH" in \
       x86_64) OPENCODE_ARCH=x64; FB_ARCH=amd64 ;; \
@@ -21,11 +21,14 @@ RUN ARCH=$(uname -m) && \
     curl -fsSL "https://github.com/filebrowser/filebrowser/releases/latest/download/linux-${FB_ARCH}-filebrowser.tar.gz" | tar -xz -C /usr/local/bin/ filebrowser && \
     chmod +x /usr/local/bin/filebrowser
 
-# 4. 创建 Choreo 规范的 10099 用户
+# 4. 创建 Choreo 规范的 10099 用户/用户组，并预先创建所需目录与默认自动授权配置
 RUN groupadd --gid 10099 choreo && \
-    useradd --uid 10099 --gid 10099 -m -d /home/choreo choreo
+    useradd --uid 10099 --gid 10099 -m -d /home/choreo choreo && \
+    mkdir -p /home/choreo/workspace /home/choreo/.config/opencode /home/choreo/.local /home/choreo/.opencode && \
+    echo '{"permission":{"*":"allow"}}' > /home/choreo/.config/opencode/opencode.json && \
+    chown -R 10099:10099 /home/choreo
 
-# 5. 生成系统级 Nginx 配置文件（重点：关闭缓冲以支持 AI 流式传输）
+# 5. 生成专门适配非 Root(10099) 且关闭缓冲的 Nginx 配置
 RUN printf 'pid /tmp/nginx.pid;\n\
 events { worker_connections 1024; }\n\
 http {\n\
@@ -42,16 +45,17 @@ http {\n\
     server {\n\
         listen 7860;\n\
 \n\
-        # 路由 1: 文件管理器\n\
+        # 路由 1: 网页文件管理器 (/files/)\n\
         location /files/ {\n\
             proxy_pass http://127.0.0.1:8080;\n\
             proxy_set_header Host $host;\n\
             proxy_set_header X-Real-IP $remote_addr;\n\
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
             proxy_set_header X-Forwarded-Proto $scheme;\n\
+            client_max_body_size 500M;\n\
         }\n\
 \n\
-        # 路由 2: OpenCode 网页服务\n\
+        # 路由 2: OpenCode 网页端 (/)\n\
         location / {\n\
             proxy_pass http://127.0.0.1:7861;\n\
             proxy_http_version 1.1;\n\
@@ -61,33 +65,43 @@ http {\n\
             proxy_set_header X-Real-IP $remote_addr;\n\
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
             proxy_set_header X-Forwarded-Proto $scheme;\n\
-            # 关键修改：关闭 Nginx 代理缓冲与缓存，允许 SSE 流式推送到前端\n\
+            # 核心技术点：关闭 proxy_buffering 才能让 AI 流式打字正常输出\n\
             proxy_buffering off;\n\
             proxy_cache off;\n\
+            chunked_transfer_encoding on;\n\
             proxy_read_timeout 3600s;\n\
             proxy_send_timeout 3600s;\n\
         }\n\
     }\n\
 }\n' > /etc/nginx/custom_nginx.conf
 
-# 6. 生成入口脚本（修正 opencode.json 的 JSON 结构）
+# 6. 生成启动入口脚本（放在 /usr/local/bin 避免被持久化卷挂载覆盖）
 RUN printf '#!/bin/sh\n\
-mkdir -p /tmp/workspace /tmp/.config/opencode /tmp/.local /tmp/.opencode\n\
-printf "{\\\"permission\\\":{\\\"*\\\":\\\"allow\\\"}}" > /tmp/.config/opencode/opencode.json\n\
-filebrowser --port 8080 --address 127.0.0.1 --baseurl /files --root /tmp/workspace --database /tmp/filebrowser.db --noauth &\n\
-cd /tmp/workspace && opencode web --port 7861 --hostname 127.0.0.1 &\n\
+# 再次确保工作区和配置目录存在\n\
+mkdir -p /home/choreo/workspace /home/choreo/.config/opencode\n\
+echo "{\\\"permission\\\":{\\\"*\\\":\\\"allow\\\"}}" > /home/choreo/.config/opencode/opencode.json\n\
+\n\
+# 1. 启动轻量文件管理器 Filebrowser (监听 127.0.0.1:8080，路径映射到 /files)\n\
+filebrowser --port 8080 --address 127.0.0.1 --baseurl /files --root /home/choreo/workspace --database /tmp/filebrowser.db --noauth &\n\
+\n\
+# 2. 启动 OpenCode Web 服务 (监听 127.0.0.1:7861，带 --auto 开启自动接受权限)\n\
+cd /home/choreo/workspace && opencode web --auto --port 7861 --hostname 127.0.0.1 &\n\
+\n\
+# 3. 前台启动 Nginx 统一向外暴露端口 7860\n\
 exec nginx -c /etc/nginx/custom_nginx.conf -g "daemon off;"\n' > /usr/local/bin/entrypoint.sh \
     && chmod +x /usr/local/bin/entrypoint.sh
 
-# 设置环境变量
-ENV HOME=/tmp
+# 设置环境变量（完全匹配你的原始环境变量设置）
+ENV HOME=/home/choreo
 ENV OPENCODE_SERVER_PASSWORD=111111
+ENV OPENCODE_PERMISSION='{"*":"allow"}'
 
-# 切换为 10099 非 root 用户
+# 7. 切换为 10099 非 root 用户
 USER 10099
-WORKDIR /tmp/workspace
+WORKDIR /home/choreo/workspace
 
-# 暴露端口
+# 暴露 Choreo 唯一的 7860 端口
 EXPOSE 7860
 
+# 运行联合启动脚本
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

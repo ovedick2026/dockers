@@ -1,0 +1,3 @@
+FROM ghcr.io/ovedick2026/zitest:latest
+
+USER 10015

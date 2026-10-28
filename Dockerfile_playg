@@ -1,3 +1,50 @@
 FROM ghcr.io/mag1cfall/aistudio2api:latest
 
-user 10014
+# 官方基础镜像默认是 root；这里明确写出，保证构建期间有权限写 /opt 和 /data
+USER root
+
+# 构建时启动一次程序：
+# - 触发官方程序下载“它自己所要求版本”的 Camoufox
+# - 下载完成后复制到 /opt/camoufox
+# - 最终运行时不再依赖首次下载
+RUN set -eux; \
+    mkdir -p /opt/camoufox /data/runtime /data/.cache; \
+    \
+    aistudio2api -open-ui=false > /tmp/aistudio2api-bootstrap.log 2>&1 & \
+    pid="$!"; \
+    \
+    for i in $(seq 1 900); do \
+        if [ -x /data/runtime/camoufox/camoufox ] && \
+           [ -f /data/runtime/camoufox/application.ini ]; then \
+            break; \
+        fi; \
+        \
+        if ! kill -0 "$pid" 2>/dev/null; then \
+            echo "Camoufox 下载/初始化失败，应用提前退出："; \
+            cat /tmp/aistudio2api-bootstrap.log; \
+            exit 1; \
+        fi; \
+        sleep 1; \
+    done; \
+    \
+    test -x /data/runtime/camoufox/camoufox; \
+    test -f /data/runtime/camoufox/application.ini; \
+    \
+    kill -TERM "$pid" || true; \
+    wait "$pid" || true; \
+    \
+    cp -a /data/runtime/camoufox/. /opt/camoufox/; \
+    rm -rf /data/runtime/camoufox; \
+    \
+    # 允许 UID 10014 读取和执行预装浏览器
+    chown -R 10014:10014 /opt/camoufox /data; \
+    chmod -R a+rX /opt/camoufox
+
+# 强制程序优先使用镜像内预装的 Camoufox。
+# HOME / XDG_CACHE_HOME 避免非 root 用户尝试写 /root。
+ENV CAMOUFOX_PATH=/opt/camoufox/camoufox \
+    HOME=/data \
+    XDG_CACHE_HOME=/data/.cache
+
+# 你的平台要求非 root 时保留这一行
+USER 10014
